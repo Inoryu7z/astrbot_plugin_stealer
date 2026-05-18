@@ -48,7 +48,7 @@ class PromptManager:
             self.emoji_classification_with_filter_prompt = emoji_classification_with_filter_prompt
 
     def build_classification_prompt(
-        self, *, use_filter: bool = False, categories: list[str] | None = None
+        self, *, use_filter: bool = False, categories: list[str] | None = None, user_note: str = ""
     ) -> str:
         """根据当前配置构建完整的 VLM 分类提示词。"""
         emotion_list = self._build_emotion_list_str(categories)
@@ -57,7 +57,10 @@ class PromptManager:
             if use_filter
             else self.emoji_classification_prompt
         )
-        return self._render_prompt_template(template, emotion_list)
+        prompt = self._render_prompt_template(template, emotion_list)
+        if user_note and user_note.strip():
+            prompt += f"\n\n<user_note>\n用户备注：{user_note.strip()}\n请在分类和描述时参考此备注。\n</user_note>"
+        return prompt
 
     def _build_emotion_list_str(self, categories: list[str] | None = None) -> str:
         categories = categories if categories is not None else (self.categories or [])

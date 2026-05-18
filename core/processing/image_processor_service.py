@@ -735,6 +735,7 @@ class ImageProcessorService:
         file_path: str,
         categories=None,
         content_filtration=None,
+        user_note: str = "",
     ) -> tuple[str, list[str], str, str, list[str]]:
         """使用视觉模型对图片进行分类并返回详细信息。
 
@@ -743,6 +744,7 @@ class ImageProcessorService:
             file_path: 图片绝对路径
             categories: 分类列表（可选，默认使用 self.categories）
             content_filtration: 是否进行内容过滤（可选，默认使用 self.content_filtration）
+            user_note: 用户备注（可选，作为 VLM 分类的额外上下文）
 
         Returns:
             tuple: (category, tags, desc, emotion, scenes)
@@ -764,7 +766,7 @@ class ImageProcessorService:
             if not prompt_categories:
                 raise ValueError("未配置可用分类，无法进行图片分类")
             prompt = self._prompt_manager.build_classification_prompt(
-                use_filter=should_filter, categories=prompt_categories
+                use_filter=should_filter, categories=prompt_categories, user_note=user_note
             )
 
             # 调用视觉模型

@@ -757,11 +757,12 @@ class PluginAPI:
             data = await request.get_json() or {}
             img_hash = (data.get("hash", "") or "").strip()
             img_base64 = (data.get("base64", "") or "").strip()
+            user_note = (data.get("note", "") or "").strip()
+            auto_update = str(data.get("auto_update", "false")).lower() == "true"
             tmp_file_to_cleanup = None
 
             file_path = None
 
-            # 优先通过 hash 从索引查找文件路径
             if img_hash:
                 index = self._get_index()
                 for p, m in index.items():
@@ -771,7 +772,6 @@ class PluginAPI:
                 if not file_path or not os.path.isfile(file_path):
                     file_path = None
 
-            # hash 查不到或未提供 hash 时，回退到 base64 方式
             if not file_path and img_base64:
                 import base64
                 import tempfile
@@ -802,21 +802,36 @@ class PluginAPI:
                 file_path=file_path,
                 categories=list(self._cfg.categories or []),
                 content_filtration=False,
+                user_note=user_note,
             )
             if cat == getattr(proc, "CATEGORY_FILTERED", None):
                 return jsonify({"success": False, "error": "图片内容审核不通过"})
             if not cat:
                 return jsonify({"success": False, "error": "无法识别图片分类"})
 
-            return jsonify(
-                {
-                    "success": True,
-                    "category": cat,
-                    "tags": tags,
-                    "description": desc,
-                    "scenes": scenes or [],
-                }
-            )
+            result = {
+                "success": True,
+                "category": cat,
+                "tags": tags,
+                "description": desc,
+                "scenes": scenes or [],
+            }
+
+            if auto_update and img_hash:
+                index = self._get_index()
+                for p, m in index.items():
+                    if isinstance(m, dict) and m.get("hash") == img_hash:
+                        m["category"] = cat
+                        m["tags"] = tags
+                        m["desc"] = desc
+                        m["scenes"] = scenes or []
+                        if user_note:
+                            m["user_note"] = user_note
+                        break
+                await self.plugin._save_index(index)
+                result["updated"] = True
+
+            return jsonify(result)
         except Exception as e:
             logger.error(f"VLM分析失败: {e}", exc_info=True)
             return jsonify({"success": False, "error": f"分析失败: {e}"})
