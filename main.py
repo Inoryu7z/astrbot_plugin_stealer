@@ -97,6 +97,35 @@ class Main(Star):
         self._terminated: bool = False  # 终止标志位，防止重复清理
         # 强制捕获窗口已迁移到 EventHandler
 
+    def _sync_llm_tool_visibility(self) -> None:
+        """根据 auto_send 配置动态启用/禁用 LLM 工具。
+
+        当 auto_send=False 时，停用 search_emoji 和 send_emoji_by_id，
+        防止 LLM 在用户关闭表情包功能后仍调用工具浪费 token。
+        """
+        try:
+            if not hasattr(self, "context") or self.context is None:
+                return
+
+            should_activate = bool(self.auto_send)
+
+            for tool_name in ("search_emoji", "send_emoji_by_id"):
+                try:
+                    if should_activate:
+                        self.context.activate_llm_tool(tool_name)
+                    else:
+                        self.context.deactivate_llm_tool(tool_name)
+                except AttributeError:
+                    logger.debug("[Stealer] 框架不支持 activate/deactivate_llm_tool，跳过工具可见性同步")
+                    return
+                except Exception as e:
+                    logger.debug(f"[Stealer] 同步工具可见性失败 ({tool_name}): {e}")
+
+            state = "启用" if should_activate else "停用"
+            logger.info(f"[Stealer] LLM 工具已{state}: search_emoji, send_emoji_by_id")
+        except Exception as e:
+            logger.debug(f"[Stealer] 同步 LLM 工具可见性异常: {e}")
+
     def _sync_all_config(self) -> None:
         """从配置服务同步所有配置到实例属性。"""
         self.auto_send = self.plugin_config.auto_send
@@ -364,6 +393,9 @@ class Main(Star):
                     self.plugin_config.ensure_category_dirs(self.categories)
                 except Exception as e:
                     logger.warning(f"[Config] 创建分类目录失败: {e}")
+
+                self._sync_llm_tool_visibility()
+
                 logger.debug("[Config] 配置已更新，下次 LLM 请求将使用新分类")
         except Exception as e:
             logger.error(f"更新配置失败: {e}")
@@ -588,18 +620,13 @@ class Main(Star):
         Args:
             query(string): 你当前心情的代表词（也支持描述词、场景词）
 
-        使用建议：
-        - 先判断你此刻最能代表自己的心情词（例如：开心、无语、尴尬、感谢）
-        - 再用该心情词调用本工具搜索候选
-        - 若无结果，可换同义词再搜索（如“无语”->"dumb/尴尬"）
-
         返回值：
         返回候选表情包列表，每个包含：
         - 编号：用于调用 send_emoji_by_id
         - 分类：表情包的情绪分类
         - 描述：表情包的详细描述（这是你选择时的重要参考）
 
-        请先锁定“当前心情词”，再仔细阅读候选描述，选择最能代表你当前心情与语气的一张。
+        重要：如果搜索返回无结果或提示库为空，请勿重复调用此工具，直接回复用户即可。
         """
         query = str(query or "").strip()
         logger.info(f"[Tool] LLM 搜索表情包: {query}")
@@ -609,6 +636,10 @@ class Main(Star):
         try:
             if not query:
                 yield "搜索失败：缺少 query 参数。请传入你当前心情词，例如：开心、无语、尴尬、感谢。"
+                return
+
+            if not self.auto_send:
+                yield "表情包功能已禁用，无法搜索。请勿再调用此工具。"
                 return
 
             if not self.is_send_enabled_for_event(event):
@@ -624,21 +655,17 @@ class Main(Star):
                 await self._load_index()
                 idx = self.db_service.get_index_cache_readonly()
 
+            if not idx:
+                yield "当前表情包库为空，没有任何可用的表情包。请勿再调用 search_emoji 工具，直接回复用户即可。"
+                return
+
             # smart_search 已内置关键词映射和模糊匹配（阈值0.4）
             results = await self._search_emoji_candidates(
                 event, query, limit=self.MAX_SEARCH_RESULTS, idx=idx
             )
 
             if not results:
-                similar = self._find_similar_categories(query, top_n=3)
-                suggestion = f"未找到与'{query}'匹配的表情包。"
-                if similar:
-                    suggestion += "\n\n您是否想找以下分类？\n- " + "\n- ".join(similar)
-                suggestion += "\n\n可用分类：" + ", ".join(self.categories[:10])
-                if len(self.categories) > 10:
-                    suggestion += f" 等共{len(self.categories)}个分类"
-                logger.warning(f"[Tool] 未找到匹配: {query}, 推荐: {similar}")
-                yield suggestion
+                yield "未找到与该心情匹配的表情包。请勿继续搜索，直接回复用户即可。"
                 return
 
             candidates = []
@@ -699,16 +726,21 @@ class Main(Star):
     async def send_emoji_by_id(self, event: AstrMessageEvent, emoji_id: int):
         """发送你选择的表情包。必须先调用 search_emoji 获取候选列表。
 
-        选择原则：优先发送能代表你“当前心情词”的候选项。
+        选择原则：优先发送能代表你"当前心情词"的候选项。
 
         Args:
             emoji_id(number): 表情包编号（从 search_emoji 返回的列表中选择）
 
+        重要：如果 search_emoji 返回无结果或提示功能已禁用，请勿调用此工具。
         """
         logger.info(f"[Tool] LLM 选择发送表情包编号: {emoji_id}")
         turn_state = self._emoji_turn_state(event)
 
         try:
+            if not self.auto_send:
+                yield "表情包功能已禁用，无法发送。请勿再调用此工具。"
+                return
+
             if not self.is_send_enabled_for_event(event):
                 yield "发送失败：当前群聊已禁用表情包功能"
                 return
@@ -1154,6 +1186,9 @@ class Main(Star):
             self._sync_image_processor_from_runtime()
             self.task_scheduler.create_task("raw_cleanup_loop", self._raw_cleanup_loop())
             self.task_scheduler.create_task("capacity_control_loop", self._capacity_control_loop())
+
+            self._sync_llm_tool_visibility()
+
             logger.info("[Stealer] 插件初始化完成")
         except Exception as e:
             logger.error(f"初始化插件失败: {e}")
