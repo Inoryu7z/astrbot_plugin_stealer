@@ -98,18 +98,24 @@ class Main(Star):
         # 强制捕获窗口已迁移到 EventHandler
 
     def _sync_llm_tool_visibility(self) -> None:
-        """根据 auto_send 配置动态启用/禁用 LLM 工具。
+        """根据配置动态启用/禁用 LLM 工具。
 
-        当 auto_send=False 时，停用 search_emoji 和 send_emoji_by_id，
-        防止 LLM 在用户关闭表情包功能后仍调用工具浪费 token。
+        - search_emoji / send_emoji_by_id：由 auto_send 控制
+        - steal_sticker：由 steal_by_llm 控制
+        防止 LLM 在用户关闭功能后仍调用工具浪费 token。
         """
         try:
             if not hasattr(self, "context") or self.context is None:
                 return
 
-            should_activate = bool(self.auto_send)
+            send_should_activate = bool(self.auto_send)
+            steal_should_activate = bool(self.steal_by_llm)
 
-            for tool_name in ("search_emoji", "send_emoji_by_id"):
+            for tool_name, should_activate in (
+                ("search_emoji", send_should_activate),
+                ("send_emoji_by_id", send_should_activate),
+                ("steal_sticker", steal_should_activate),
+            ):
                 try:
                     if should_activate:
                         self.context.activate_llm_tool(tool_name)
@@ -121,8 +127,10 @@ class Main(Star):
                 except Exception as e:
                     logger.debug(f"[Stealer] 同步工具可见性失败 ({tool_name}): {e}")
 
-            state = "启用" if should_activate else "停用"
-            logger.info(f"[Stealer] LLM 工具已{state}: search_emoji, send_emoji_by_id")
+            send_state = "启用" if send_should_activate else "停用"
+            steal_state = "启用" if steal_should_activate else "停用"
+            logger.info(f"[Stealer] LLM 发送工具已{send_state}: search_emoji, send_emoji_by_id")
+            logger.info(f"[Stealer] LLM 偷取工具已{steal_state}: steal_sticker")
         except Exception as e:
             logger.debug(f"[Stealer] 同步 LLM 工具可见性异常: {e}")
 
