@@ -358,6 +358,12 @@ const TEMPLATE = /* html */ `
                             </svg>
                             编辑
                         </button>
+                        <button @click="openReanalyze" class="codex-btn" style="flex:1" :disabled="reanalyzing">
+                            <svg style="width:16px;height:16px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                            </svg>
+                            {{ reanalyzing ? '分析中...' : '重分析' }}
+                        </button>
                         <button @click="toggleScope(previewItem, previewItem?.scope_mode === 'local' ? 'public' : 'local')" class="codex-btn" style="flex:1">
                             {{ previewItem?.scope_mode === 'local' ? '解除限定' : '限定本群' }}
                         </button>
@@ -774,6 +780,32 @@ const TEMPLATE = /* html */ `
             {{ toastMessage }}
         </div>
 
+        <div v-if="reanalyzeOpen" class="modal-overlay" @click.self="reanalyzeOpen = false">
+            <div class="modal-panel" style="max-width:400px">
+                <div class="modal-panel-corner-bl"></div>
+                <div class="modal-panel-corner-br"></div>
+                <div class="modal-header">
+                    <h2>VLM 重新分析</h2>
+                    <button @click="reanalyzeOpen = false" class="modal-close">
+                        <svg style="width:20px;height:20px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-content">
+                    <p style="margin-bottom:12px;color:var(--text-secondary)">将使用视觉模型重新分析此表情包，结果会覆盖当前分类、标签、描述和场景。</p>
+                    <label style="display:block;margin-bottom:6px;color:var(--text-primary)">用户备注（可选）</label>
+                    <textarea v-model="reanalyzeNote" class="codex-input" rows="3" placeholder="例如：这个表情是用于表示惊讶的"></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button @click="reanalyzeOpen = false" class="codex-btn" style="flex:1">取消</button>
+                    <button @click="doReanalyze" class="codex-btn primary" style="flex:1" :disabled="reanalyzing">
+                        {{ reanalyzing ? '分析中...' : '开始分析' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <div v-if="confirmOpen" class="modal-overlay" @click.self="onConfirmNo">
             <div class="modal-panel" style="max-width:400px">
                 <div class="modal-header">
@@ -823,6 +855,9 @@ createApp({
         // Custom confirm dialog (sandbox blocks native confirm/alert)
         const confirmOpen = ref(false);
         const confirmMessage = ref('');
+        const reanalyzeOpen = ref(false);
+        const reanalyzeNote = ref('');
+        const reanalyzing = ref(false);
         let confirmResolve = null;
         const showConfirm = (msg) => new Promise((resolve) => {
             confirmMessage.value = msg;
@@ -1157,6 +1192,51 @@ createApp({
                 }
             } catch (e) {
                 showAlert('保存出错: ' + e.message);
+            }
+        };
+
+        const openReanalyze = () => {
+            reanalyzeNote.value = '';
+            reanalyzeOpen.value = true;
+        };
+
+        const doReanalyze = async () => {
+            if (!previewItem.value) return;
+            reanalyzing.value = true;
+            try {
+                const res = await apiFetch('api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        hash: previewItem.value.hash,
+                        note: reanalyzeNote.value,
+                        auto_update: true,
+                    }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    reanalyzeOpen.value = false;
+                    if (data.updated) {
+                        const refreshedImages = await fetchImages(currentPage.value);
+                        const refreshedItem = refreshedImages.find((item) => item.hash === previewItem.value.hash);
+                        if (refreshedItem) {
+                            previewItem.value = refreshedItem;
+                        } else {
+                            previewItem.value.category = data.category;
+                            previewItem.value.tags = data.tags;
+                            previewItem.value.desc = data.description;
+                            previewItem.value.scenes = data.scenes;
+                        }
+                        await fetchStats();
+                    }
+                    showAlert('重新分析完成');
+                } else {
+                    showAlert(data.error || '分析失败');
+                }
+            } catch (e) {
+                showAlert('分析出错: ' + e.message);
+            } finally {
+                reanalyzing.value = false;
             }
         };
 
@@ -1835,6 +1915,11 @@ createApp({
 
             confirmOpen,
             confirmMessage,
+            reanalyzeOpen,
+            reanalyzeNote,
+            reanalyzing,
+            openReanalyze,
+            doReanalyze,
             onConfirmYes,
             onConfirmNo,
             toastOpen,
